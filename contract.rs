@@ -9,16 +9,26 @@ use soroban_sdk::token::{self, Interface as _};
 use soroban_sdk::{contract, contractimpl, Address, Env, String};
 use soroban_token_sdk::metadata::TokenMetadata;
 use soroban_token_sdk::TokenUtils;
+use std::collections::HashMap;
 
 fn check_nonnegative_amount(amount: i128) {
     if amount < 0 {
         panic!("negative amount is not allowed: {}", amount)
     }
 }
+
+#[derive(Default)]
 struct Account {
     balance: u128,
     frozen: bool,
 }
+
+#[contract]
+pub struct Token {
+    balances: HashMap<Address, Account>,
+    total_supply: u128,
+}
+
 impl Token {
     fn new(total_supply: u128) -> Self {
         Self {
@@ -27,9 +37,6 @@ impl Token {
         }
     }
 }
-
-#[contract]
-pub struct Token;
 
 #[contractimpl]
 impl Token {
@@ -76,6 +83,26 @@ impl Token {
         write_administrator(&e, &new_admin);
         TokenUtils::new(&e).events().set_admin(admin, new_admin);
     }
+
+    pub fn freeze_account(&mut self, e: Env, account: Address) {
+        let admin = read_administrator(&e);
+        admin.require_auth();
+
+        let mut acc = self.balances.entry(account.clone()).or_insert(Account::default());
+        acc.frozen = true;
+
+        TokenUtils::new(&e).events().custom("freeze_account", (admin, account));
+    }
+
+    pub fn unfreeze_account(&mut self, e: Env, account: Address) {
+        let admin = read_administrator(&e);
+        admin.require_auth();
+
+        let mut acc = self.balances.entry(account.clone()).or_insert(Account::default());
+        acc.frozen = false;
+
+        TokenUtils::new(&e).events().custom("unfreeze_account", (admin, account));
+    }
 }
 
 #[contractimpl]
@@ -114,6 +141,13 @@ impl token::Interface for Token {
 
         check_nonnegative_amount(amount);
 
+        let token_instance: &mut Token = e.data().get_mut().unwrap();
+        let from_account = token_instance.balances.get(&from).expect("Sender not found");
+
+        if from_account.frozen {
+            panic!("Account is frozen");
+        }
+
         e.storage()
             .instance()
             .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
@@ -127,6 +161,13 @@ impl token::Interface for Token {
         spender.require_auth();
 
         check_nonnegative_amount(amount);
+
+        let token_instance: &mut Token = e.data().get_mut().unwrap();
+        let from_account = token_instance.balances.get(&from).expect("Sender not found");
+
+        if from_account.frozen {
+            panic!("Account is frozen");
+        }
 
         e.storage()
             .instance()
@@ -175,20 +216,5 @@ impl token::Interface for Token {
 
     fn symbol(e: Env) -> String {
         read_symbol(&e)
-    }
-}
-impl Token {
-    fn freeze_account(&mut self, account: AccountId) {
-        let mut account = self.balances.get_mut(&account).expect("Account not found");
-        account.frozen = true;
-    }
-}
-impl Token {
-    fn transfer(&mut self, from: AccountId, to: AccountId, value: u128) -> Result<(), String> {
-        let from_account = self.balances.get_mut(&from).expect("Sender not found");
-        if from_account.frozen {
-            return Err(String::from("Account is frozen"));
-        }
-        // ... rest of the transfer logic
     }
 }
